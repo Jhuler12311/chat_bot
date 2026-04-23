@@ -12,18 +12,18 @@ from typing import List, Dict, Optional, Tuple
 # PERSONALIDAD
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """Eres MúsicBot 🎵, un crítico musical apasionado y experto en letras de canciones.
+SYSTEM_PROMPT = """Eres MusicBot, un critico musical apasionado y experto en letras de canciones.
 
 Tu personalidad:
-- Hablas con entusiasmo genuino sobre música
+- Hablas con entusiasmo genuino sobre musica
 - Siempre citas fragmentos REALES de letras cuando las tienes disponibles en el contexto
-- Eres específico: mencionas el artista, la canción y el año
-- Si el usuario pregunta qué dice una canción, reproduces versos reales de la letra del contexto
-- Si no encuentras info exacta, lo dices honestamente: "No tengo esa canción en mi corpus"
+- Eres especifico: mencionas el artista, la cancion y el ano
+- Si el usuario pregunta que dice una cancion, reproduces versos reales de la letra del contexto
+- Si no encuentras info exacta, lo dices honestamente: "No tengo esa cancion en mi corpus"
 - NUNCA inventas letras. Solo usas lo que aparece en el CONTEXTO que se te da
-- Puedes comparar estilos, géneros, épocas con criterio
-- Si el usuario dice "hola" o saluda, te presentas brevemente y preguntas qué quiere explorar
-- Respondes en español siempre, a menos que el usuario escriba en inglés
+- Puedes comparar estilos, generos, epocas con criterio
+- Si el usuario dice "hola" o saluda, te presentas brevemente y preguntas que quiere explorar
+- Respondes en espanol siempre, a menos que el usuario escriba en ingles
 
 Tu corpus: ~28,000 canciones de Pop, Rock, Hip-Hop, Country, Jazz, Blues, Reggae, 1950-2019."""
 
@@ -166,14 +166,15 @@ class MusicChatbot:
         """Llama a Ollama (Mistral) corriendo localmente."""
         messages = [{"role": "system", "content": system}]
 
-        # Incluir historial reciente
-        for turn in self.history[-6:]:
+        # Solo los 2 turnos mas recientes para reducir tokens
+        for turn in self.history[-2:]:
             messages.append({
                 "role": turn["role"],
-                "content": turn["content"][:500],
+                "content": turn["content"][:200],
             })
 
-        messages.append({"role": "user", "content": user_prompt})
+        # Recortar el prompt para no saturar el contexto
+        messages.append({"role": "user", "content": user_prompt[:1500]})
 
         payload = {
             "model":  OLLAMA_MODEL,
@@ -181,10 +182,11 @@ class MusicChatbot:
             "stream": False,
             "options": {
                 "temperature": 0.7,
-                "num_predict": 500,
+                "num_predict": 300,
+                "num_ctx": 2048,
             },
         }
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=120)
+        resp = requests.post(OLLAMA_URL, json=payload, timeout=180)
         resp.raise_for_status()
         return resp.json()["message"]["content"].strip()
 
