@@ -1,0 +1,35 @@
+# ── Core ─────────────────────────────────────────────────────────────────────
+pandas>=2.0.0
+numpy>=1.26.0
+scikit-learn>=1.3.0
+tqdm>=4.65.0
+
+# ── NLP / Embeddings ─────────────────────────────────────────────────────────
+sentence-transformers>=2.7.0
+transformers>=4.40.0
+datasets>=2.19.0
+accelerate>=0.29.0
+evaluate>=0.4.0
+
+# ── FAISS ────────────────────────────────────────────────────────────────────
+faiss-cpu>=1.7.4
+
+# ── Generador local ───────────────────────────────────────────────────────────
+# torch instalado por separado (pip install torch)
+# google/flan-t5-base se descarga automáticamente de HuggingFace
+
+# ── APIs opcionales ───────────────────────────────────────────────────────────
+anthropic>=0.40.0
+openai>=1.25.0
+
+# ── App Plotly Dash ───────────────────────────────────────────────────────────
+dash>=2.17.0
+dash-bootstrap-components>=1.6.0
+plotly>=5.22.0
+
+# ── Visualización ─────────────────────────────────────────────────────────────
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# ── Utils ─────────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0

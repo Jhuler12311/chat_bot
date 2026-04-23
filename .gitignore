@@ -1,0 +1,16 @@
+.venv/
+models/
+data/tcc_ceds_music.csv
+data/embeddings_cache/
+Resultados/
+src/__pycache__/
+app/__pycache__/
+__pycache__/
+*.pyc
+*.pkl
+*.npy
+*.idx
+*.safetensors
+*.pt
+*.pth
+*.bin
