@@ -4,55 +4,52 @@ Proyecto 3 - Chatbot Musical CUC
 
 Ejecutar:
     python app/chatbot_app.py
-    
-Abrir navegador en: http://127.0.0.1:8050/
+
+Abrir navegador: http://127.0.0.1:8050/
 """
 
 import sys
 import os
-import json
-import time
 import threading
 import pandas as pd
 from pathlib import Path
 
-# ── Path setup ────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 import dash
-from dash import dcc, html, Input, Output, State, ctx, callback_context, no_update
+from dash import dcc, html, Input, Output, State, callback_context, no_update
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import plotly.express as px
 
-from app.config import (CORPUS_CSV, TOP_K, CHUNKING_STRATEGY,
-                        APP_HOST, APP_PORT, APP_DEBUG)
+from app.config import CORPUS_CSV, CHUNKING_STRATEGY, APP_HOST, APP_PORT, APP_DEBUG
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Estado global (se inicializa en background)
+# Estado global
 # ─────────────────────────────────────────────────────────────────────────────
 chatbot = None
 rag_index = None
 rag_chunks = None
 df_corpus = None
-STATUS = {"ready": False, "message": "Iniciando sistema..."}
+STATUS = {"ready": False, "message": "Iniciando sistema...", "error": False}
 
 
 def load_corpus() -> pd.DataFrame:
     p = Path(CORPUS_CSV)
     if not p.exists():
-        # Buscar en data/
         alts = list((ROOT / "data").glob("*.csv"))
         if alts:
             p = alts[0]
+            print(f"[APP] Corpus encontrado: {p}")
         else:
             raise FileNotFoundError(
-                f"No se encontró el corpus. Coloca tu CSV en {CORPUS_CSV}")
+                f"Coloca tu CSV en: {ROOT / 'data'}\n"
+                "Debe ser tcc_ceds_music.csv u otro con columna 'lyrics'."
+            )
     df = pd.read_csv(p, low_memory=False)
-    # Normalizar nombres de columnas
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-    print(f"[APP] Corpus cargado: {len(df)} filas, columnas: {list(df.columns)}")
+    print(f"[APP] Corpus: {len(df)} filas | columnas: {list(df.columns)[:8]}...")
     return df
 
 
@@ -62,7 +59,7 @@ def init_system():
         STATUS["message"] = "Cargando corpus..."
         df_corpus = load_corpus()
 
-        STATUS["message"] = "Construyendo índice RAG (puede tardar 1-2 min la primera vez)..."
+        STATUS["message"] = "Construyendo índice RAG..."
         from src.rag_utils import build_rag_pipeline
         rag_index, rag_chunks = build_rag_pipeline(df_corpus, estrategia=CHUNKING_STRATEGY)
 
@@ -71,406 +68,466 @@ def init_system():
         chatbot = MusicChatbot(index=rag_index, chunks=rag_chunks)
 
         STATUS["ready"] = True
-        STATUS["message"] = "✅ Sistema listo"
-        print("[APP] Sistema completamente inicializado.")
+        STATUS["message"] = "Sistema listo"
     except Exception as e:
-        STATUS["message"] = f"❌ Error: {e}"
-        print(f"[APP] Error en inicialización: {e}")
+        STATUS["message"] = f"{e}"
+        STATUS["error"] = True
         import traceback; traceback.print_exc()
 
 
-# Lanzar en background
 threading.Thread(target=init_system, daemon=True).start()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Gráficas auxiliares
+# Charts
 # ─────────────────────────────────────────────────────────────────────────────
 
 def make_genre_chart():
     if df_corpus is None:
-        return go.Figure()
-    col = "genre" if "genre" in df_corpus.columns else "genero"
-    if col not in df_corpus.columns:
+        return go.Figure().update_layout(paper_bgcolor="rgba(0,0,0,0)",
+                                          plot_bgcolor="rgba(0,0,0,0)")
+    col = next((c for c in ["genre", "genero"] if c in df_corpus.columns), None)
+    if not col:
         return go.Figure()
     counts = df_corpus[col].value_counts().head(8)
-    fig = px.bar(
-        x=counts.values, y=counts.index, orientation="h",
-        color=counts.values,
-        color_continuous_scale=["#1a1a2e", "#e94560", "#f5a623"],
-        labels={"x": "Canciones", "y": "Género"},
-    )
+    fig = px.bar(x=counts.values, y=counts.index, orientation="h",
+                 color_discrete_sequence=["#c8a96e"])
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#e0e0e0", family="Space Mono, monospace"),
-        margin=dict(l=10, r=10, t=20, b=10),
+        font=dict(color="#888", family="'DM Mono', monospace", size=10),
+        margin=dict(l=0, r=0, t=4, b=0),
         coloraxis_showscale=False,
-        showlegend=False,
-        height=220,
+        height=180,
     )
-    fig.update_traces(marker_line_width=0)
-    fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)", zeroline=False)
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.04)", zeroline=False, showticklabels=False)
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)", tickfont=dict(size=10))
+    fig.update_traces(marker_opacity=0.75)
     return fig
 
 
 def make_decade_chart():
     if df_corpus is None:
         return go.Figure()
-    col = "release_date" if "release_date" in df_corpus.columns else "year"
-    if col not in df_corpus.columns:
+    col = next((c for c in ["release_date", "year", "año"] if c in df_corpus.columns), None)
+    if not col:
         return go.Figure()
     years = pd.to_numeric(df_corpus[col], errors="coerce").dropna()
     decades = (years // 10 * 10).value_counts().sort_index()
-    fig = px.line(
-        x=decades.index.astype(int), y=decades.values,
-        markers=True,
-        labels={"x": "Década", "y": "Canciones"},
-        color_discrete_sequence=["#e94560"],
-    )
+    fig = px.area(x=decades.index.astype(int), y=decades.values,
+                  color_discrete_sequence=["#c8a96e"])
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#e0e0e0", family="Space Mono, monospace"),
-        margin=dict(l=10, r=10, t=20, b=10),
-        height=180,
+        font=dict(color="#888", family="'DM Mono', monospace", size=10),
+        margin=dict(l=0, r=0, t=4, b=0),
+        height=120,
+        showlegend=False,
     )
-    fig.update_traces(line_width=2, marker_size=6)
-    fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)", zeroline=False)
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", zeroline=False)
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)", zeroline=False, title=None)
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)", zeroline=False, title=None, showticklabels=False)
+    fig.update_traces(fillcolor="rgba(200,169,110,0.08)", line_width=1.5)
     return fig
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Layout Plotly Dash
+# Design tokens
+# ─────────────────────────────────────────────────────────────────────────────
+C = {
+    "bg":      "#0e0e0e",
+    "surface": "#141414",
+    "card":    "#181818",
+    "border":  "#272727",
+    "gold":    "#c8a96e",
+    "text":    "#e0e0e0",
+    "muted":   "#555",
+    "dimmed":  "#333",
+    "green":   "#5a9e6f",
+    "red":     "#9e5a5a",
+}
+MONO  = "'DM Mono', 'Courier New', monospace"
+SERIF = "'Cormorant Garamond', Georgia, serif"
+
+INTENT_COLORS = {
+    "letra":         "#8ab4c8",
+    "artista":       C["gold"],
+    "recomendacion": C["green"],
+    "genero":        "#a08ab4",
+    "epoca":         "#c88a6e",
+    "general":       C["muted"],
+}
+INTENT_LABELS = {
+    "letra":         "letra",
+    "artista":       "artista",
+    "recomendacion": "recomendación",
+    "genero":        "género",
+    "epoca":         "época",
+    "general":       "general",
+}
+
+EXAMPLE_QUESTIONS = [
+    "¿Qué dice la letra de 'Hotel California'?",
+    "Háblame sobre The Beatles",
+    "¿Qué diferencia al blues del jazz?",
+    "Recomiéndame canciones tristes de los 80s",
+    "¿Qué canciones hablan de amor y pérdida?",
+    "Tell me about hip-hop songs about the streets",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Render de mensajes
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_message(role: str, content: str, intent: str = "general") -> html.Div:
+    is_bot = role == "assistant"
+
+    if is_bot and intent != "general":
+        badge_color = INTENT_COLORS.get(intent, C["muted"])
+        badge = html.Span(INTENT_LABELS.get(intent, intent), style={
+            "color": badge_color,
+            "fontSize": "9px",
+            "letterSpacing": "0.12em",
+            "textTransform": "uppercase",
+            "marginBottom": "5px",
+            "display": "block",
+            "fontFamily": MONO,
+        })
+    else:
+        badge = None
+
+    bubble_style = {
+        "padding": "12px 16px",
+        "maxWidth": "82%",
+        "fontSize": "13px",
+        "lineHeight": "1.75",
+        "whiteSpace": "pre-wrap",
+        "color": C["text"] if is_bot else "#bbb",
+        "fontFamily": MONO,
+        "borderRadius": "2px",
+        "backgroundColor": C["card"] if is_bot else "transparent",
+        "border": f"1px solid {C['border']}" if is_bot else "none",
+        "borderLeft": f"2px solid {C['gold']}" if is_bot else f"2px solid {C['dimmed']}",
+    }
+
+    return html.Div([
+        html.Div([
+            badge,
+            html.Div(content, style=bubble_style),
+        ], style={
+            "maxWidth": "82%",
+        }),
+    ], style={
+        "display": "flex",
+        "marginBottom": "18px",
+        "justifyContent": "flex-start" if is_bot else "flex-end",
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layout
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = dash.Dash(
     __name__,
     external_stylesheets=[
         dbc.themes.BOOTSTRAP,
-        "https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&display=swap",
+        "https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400&family=Cormorant+Garamond:wght@300;400;600&display=swap",
     ],
     suppress_callback_exceptions=True,
-    title="MúsicBot — CUC",
+    title="MúsicBot",
 )
 server = app.server
 
-# ── Estilos inline ────────────────────────────────────────────────────────────
-COLORS = {
-    "bg":       "#0d0d1a",
-    "surface":  "#141428",
-    "card":     "#1a1a35",
-    "accent":   "#e94560",
-    "accent2":  "#f5a623",
-    "text":     "#e0e0e0",
-    "muted":    "#7a7a9a",
-    "border":   "#2a2a4a",
-}
-
-FONT_MONO = "Space Mono, Courier New, monospace"
-FONT_DISPLAY = "Bebas Neue, Impact, sans-serif"
-
-STYLE_PAGE = {
-    "backgroundColor": COLORS["bg"],
-    "minHeight": "100vh",
-    "fontFamily": FONT_MONO,
-    "color": COLORS["text"],
-    "padding": "0",
-}
-
-STYLE_HEADER = {
-    "background": f"linear-gradient(135deg, {COLORS['bg']} 0%, #1a0a2e 100%)",
-    "borderBottom": f"2px solid {COLORS['accent']}",
-    "padding": "16px 24px",
-    "display": "flex",
-    "alignItems": "center",
-    "gap": "16px",
-}
-
-STYLE_CHAT_AREA = {
-    "backgroundColor": COLORS["surface"],
-    "borderRadius": "12px",
-    "border": f"1px solid {COLORS['border']}",
-    "height": "500px",
-    "overflowY": "auto",
-    "padding": "16px",
-    "marginBottom": "12px",
-    "scrollbarWidth": "thin",
-    "scrollbarColor": f"{COLORS['accent']} {COLORS['bg']}",
-}
-
-STYLE_INPUT = {
-    "backgroundColor": COLORS["card"],
-    "border": f"1px solid {COLORS['border']}",
-    "borderRadius": "8px",
-    "color": COLORS["text"],
-    "fontFamily": FONT_MONO,
-    "fontSize": "13px",
-    "padding": "12px 16px",
-    "flex": "1",
-    "outline": "none",
-}
-
-STYLE_BTN_SEND = {
-    "backgroundColor": COLORS["accent"],
-    "border": "none",
-    "borderRadius": "8px",
-    "color": "white",
-    "fontFamily": FONT_DISPLAY,
-    "fontSize": "16px",
-    "padding": "12px 24px",
-    "cursor": "pointer",
-    "letterSpacing": "1px",
-    "whiteSpace": "nowrap",
-}
-
-STYLE_BTN_CLEAR = {
-    "backgroundColor": "transparent",
-    "border": f"1px solid {COLORS['border']}",
-    "borderRadius": "8px",
-    "color": COLORS["muted"],
-    "fontFamily": FONT_MONO,
-    "fontSize": "11px",
-    "padding": "6px 14px",
-    "cursor": "pointer",
-}
-
-STYLE_CARD = {
-    "backgroundColor": COLORS["card"],
-    "borderRadius": "12px",
-    "border": f"1px solid {COLORS['border']}",
-    "padding": "16px",
-    "marginBottom": "12px",
-}
-
-STYLE_CHUNK_CARD = {
-    "backgroundColor": "#1e1e3a",
-    "borderRadius": "8px",
-    "border": f"1px solid {COLORS['accent']}33",
-    "padding": "10px 12px",
-    "marginBottom": "8px",
-    "fontSize": "11px",
-    "color": COLORS["muted"],
-    "borderLeft": f"3px solid {COLORS['accent']}",
-}
-
-
-def render_message(role: str, content: str) -> html.Div:
-    """Renderiza un mensaje del chat."""
-    is_bot = role == "assistant"
-    bubble_style = {
-        "backgroundColor": COLORS["card"] if is_bot else COLORS["accent"] + "22",
-        "borderRadius": "12px 12px 12px 4px" if is_bot else "12px 12px 4px 12px",
-        "border": f"1px solid {COLORS['border']}" if is_bot else f"1px solid {COLORS['accent']}44",
-        "padding": "12px 16px",
-        "maxWidth": "80%",
-        "fontSize": "13px",
-        "lineHeight": "1.6",
-        "whiteSpace": "pre-wrap",
+# ── Sidebar section helper ────────────────────────────────────────────────────
+def sidebar_section(title, children, style_extra=None):
+    s = {
+        "marginBottom": "1px",
+        "borderBottom": f"1px solid {C['border']}",
+        "padding": "18px 20px",
     }
-    avatar = "🎵" if is_bot else "👤"
+    if style_extra:
+        s.update(style_extra)
     return html.Div([
-        html.Span(avatar, style={"fontSize": "18px", "marginTop": "4px",
-                                  "flexShrink": "0"}),
-        html.Div(content, style=bubble_style),
-    ], style={
-        "display": "flex",
-        "gap": "10px",
-        "marginBottom": "12px",
-        "flexDirection": "row" if is_bot else "row-reverse",
-        "alignItems": "flex-start",
-    })
+        html.Div(title, style={
+            "fontSize": "9px",
+            "letterSpacing": "0.18em",
+            "textTransform": "uppercase",
+            "color": C["muted"],
+            "marginBottom": "14px",
+            "fontFamily": MONO,
+        }),
+        *children,
+    ], style=s)
 
-
-# ── Preguntas de ejemplo ──────────────────────────────────────────────────────
-EXAMPLE_QUESTIONS = [
-    "¿Qué canciones hablan de amor?",
-    "Dame una canción de rock sobre libertad",
-    "¿Qué diferencia al hip-hop del pop?",
-    "Canciones tristes de los 80s",
-    "¿Quién canta sobre el desamor?",
-    "Tell me about jazz songs in my corpus",
-]
 
 app.layout = html.Div([
-    # ── Estado del sistema ────────────────────────────────────────────────────
     dcc.Store(id="chat-store", data=[]),
-    dcc.Store(id="rag-toggle", data=True),
-    dcc.Interval(id="status-interval", interval=2000, n_intervals=0,
-                 disabled=False),
+    dcc.Store(id="intent-store", data="general"),
+    dcc.Interval(id="status-interval", interval=2000, n_intervals=0),
 
-    # ── Header ────────────────────────────────────────────────────────────────
+    # ── LAYOUT PRINCIPAL: sidebar izq + chat + sidebar der ────────────────────
     html.Div([
-        html.Span("🎵", style={"fontSize": "32px"}),
+
+        # ── SIDEBAR IZQUIERDA ─────────────────────────────────────────────────
         html.Div([
-            html.H1("MúsicBot", style={
-                "fontFamily": FONT_DISPLAY,
-                "fontSize": "36px",
-                "color": COLORS["accent"],
-                "margin": "0",
-                "letterSpacing": "3px",
-            }),
-            html.P("Chatbot Musical Inteligente · RAG + Fine-Tuning · CUC",
-                   style={"margin": "0", "fontSize": "11px", "color": COLORS["muted"]}),
-        ]),
-        html.Div(id="status-badge", style={"marginLeft": "auto"}),
-    ], style=STYLE_HEADER),
 
-    # ── Body ──────────────────────────────────────────────────────────────────
-    html.Div([
-        dbc.Row([
-            # ── Columna izquierda: sidebar ────────────────────────────────────
-            dbc.Col([
-                # Stats corpus
-                html.Div([
-                    html.H6("📊 CORPUS", style={
-                        "fontFamily": FONT_DISPLAY,
-                        "color": COLORS["accent2"],
-                        "letterSpacing": "2px",
-                        "marginBottom": "10px",
-                        "fontSize": "14px",
-                    }),
-                    html.Div(id="corpus-stats"),
-                    dcc.Graph(id="genre-chart", figure=go.Figure(),
-                              config={"displayModeBar": False}),
-                    dcc.Graph(id="decade-chart", figure=go.Figure(),
-                              config={"displayModeBar": False}),
-                ], style=STYLE_CARD),
+            # Logo / título
+            html.Div([
+                html.Div("músicbot", style={
+                    "fontFamily": SERIF,
+                    "fontWeight": "300",
+                    "fontSize": "22px",
+                    "color": C["text"],
+                    "letterSpacing": "0.05em",
+                }),
+                html.Div("RAG · Fine-tuning · CUC 2025", style={
+                    "fontSize": "9px",
+                    "color": C["muted"],
+                    "fontFamily": MONO,
+                    "letterSpacing": "0.1em",
+                    "marginTop": "2px",
+                }),
+            ], style={"padding": "24px 20px 20px", "borderBottom": f"1px solid {C['border']}"}),
 
-                # Toggle RAG
-                html.Div([
-                    html.H6("⚙️ CONFIGURACIÓN", style={
-                        "fontFamily": FONT_DISPLAY,
-                        "color": COLORS["accent2"],
-                        "letterSpacing": "2px",
-                        "marginBottom": "10px",
-                        "fontSize": "14px",
-                    }),
-                    html.Div([
-                        html.Label("Usar RAG", style={"fontSize": "12px",
-                                                       "color": COLORS["text"],
-                                                       "marginRight": "10px"}),
-                        dcc.Checklist(
-                            id="rag-checkbox",
-                            options=[{"label": "", "value": "rag"}],
-                            value=["rag"],
-                            style={"display": "inline"},
-                        ),
-                    ], style={"marginBottom": "8px", "display": "flex",
-                              "alignItems": "center"}),
-                    html.P("Activa RAG para respuestas fundamentadas en el corpus.",
-                           style={"fontSize": "10px", "color": COLORS["muted"],
-                                  "marginBottom": "10px"}),
+            # Estado del sistema
+            sidebar_section("estado", [
+                html.Div(id="header-status"),
+            ]),
 
-                    # Filtro de género
-                    html.Label("Filtrar por género:", style={"fontSize": "11px",
-                                                              "color": COLORS["muted"]}),
-                    dcc.Dropdown(
-                        id="genre-filter",
-                        options=[{"label": "Todos", "value": ""}],
-                        value="",
-                        clearable=False,
-                        style={
-                            "backgroundColor": COLORS["surface"],
-                            "color": COLORS["text"],
-                            "border": f"1px solid {COLORS['border']}",
-                            "borderRadius": "6px",
-                            "fontSize": "12px",
-                        },
-                    ),
-                ], style=STYLE_CARD),
-
-                # Preguntas de ejemplo
-                html.Div([
-                    html.H6("💡 EJEMPLOS", style={
-                        "fontFamily": FONT_DISPLAY,
-                        "color": COLORS["accent2"],
-                        "letterSpacing": "2px",
-                        "marginBottom": "10px",
-                        "fontSize": "14px",
-                    }),
-                    *[html.Button(q, id=f"example-{i}", n_clicks=0, style={
+            # API Key
+            sidebar_section("generador", [
+                dcc.Input(
+                    id="api-key-input",
+                    type="password",
+                    placeholder="sk-ant-... o sk-...",
+                    style={
                         "backgroundColor": "transparent",
-                        "border": f"1px solid {COLORS['border']}",
-                        "borderRadius": "6px",
-                        "color": COLORS["muted"],
-                        "fontFamily": FONT_MONO,
-                        "fontSize": "10px",
-                        "padding": "6px 10px",
-                        "cursor": "pointer",
-                        "display": "block",
+                        "border": "none",
+                        "borderBottom": f"1px solid {C['border']}",
+                        "borderRadius": "0",
+                        "color": C["text"],
+                        "fontFamily": MONO,
+                        "fontSize": "11px",
+                        "padding": "6px 0",
                         "width": "100%",
-                        "textAlign": "left",
-                        "marginBottom": "6px",
-                        "transition": "all 0.2s",
-                    }) for i, q in enumerate(EXAMPLE_QUESTIONS)],
-                ], style=STYLE_CARD),
-
-            ], width=3, style={"padding": "16px 8px 16px 16px"}),
-
-            # ── Columna central: chat ─────────────────────────────────────────
-            dbc.Col([
-                # Área de mensajes
-                html.Div(id="chat-messages",
-                         children=[render_message("assistant",
-                            "¡Hola! Soy MúsicBot 🎵\n"
-                            "Soy un experto en letras de canciones de tu corpus.\n"
-                            "Puedes preguntarme sobre artistas, géneros, letras o temáticas.\n"
-                            "¿Qué quieres explorar hoy?")],
-                         style=STYLE_CHAT_AREA),
-
-                # Input row
-                html.Div([
-                    dcc.Input(
-                        id="user-input",
-                        type="text",
-                        placeholder="Pregúntame sobre canciones, géneros o artistas...",
-                        n_submit=0,
-                        debounce=False,
-                        style=STYLE_INPUT,
-                    ),
-                    html.Button("ENVIAR ▶", id="send-btn", n_clicks=0,
-                                style=STYLE_BTN_SEND),
-                    html.Button("🗑 Limpiar", id="clear-btn", n_clicks=0,
-                                style=STYLE_BTN_CLEAR),
-                ], style={"display": "flex", "gap": "8px", "alignItems": "center"}),
-
-            ], width=6, style={"padding": "16px 8px"}),
-
-            # ── Columna derecha: chunks recuperados ───────────────────────────
-            dbc.Col([
-                html.Div([
-                    html.H6("🔍 CHUNKS RECUPERADOS", style={
-                        "fontFamily": FONT_DISPLAY,
-                        "color": COLORS["accent2"],
-                        "letterSpacing": "2px",
                         "marginBottom": "10px",
-                        "fontSize": "14px",
-                    }),
-                    html.Div(id="retrieved-chunks",
-                             children=[html.P("Los fragmentos recuperados por RAG aparecerán aquí.",
-                                              style={"color": COLORS["muted"],
-                                                     "fontSize": "11px"})]),
-                ], style=STYLE_CARD),
+                        "outline": "none",
+                    }
+                ),
+                html.Button("aplicar", id="apply-api-btn", n_clicks=0, style={
+                    "backgroundColor": "transparent",
+                    "border": f"1px solid {C['border']}",
+                    "borderRadius": "2px",
+                    "color": C["muted"],
+                    "fontFamily": MONO,
+                    "fontSize": "10px",
+                    "letterSpacing": "0.1em",
+                    "padding": "5px 14px",
+                    "cursor": "pointer",
+                    "transition": "all 0.2s",
+                }),
+                html.Div(id="api-status", style={
+                    "fontSize": "10px",
+                    "marginTop": "8px",
+                    "color": C["muted"],
+                    "fontFamily": MONO,
+                }),
+            ]),
 
-                # Info del sistema
-                html.Div([
-                    html.H6("ℹ️ SISTEMA", style={
-                        "fontFamily": FONT_DISPLAY,
-                        "color": COLORS["accent2"],
-                        "letterSpacing": "2px",
-                        "marginBottom": "10px",
-                        "fontSize": "14px",
-                    }),
-                    html.Div(id="system-info"),
-                ], style=STYLE_CARD),
+            # Corpus stats
+            sidebar_section("corpus", [
+                html.Div(id="corpus-stats", style={"marginBottom": "14px"}),
+                dcc.Graph(id="genre-chart", figure=go.Figure(),
+                          config={"displayModeBar": False},
+                          style={"marginLeft": "-8px"}),
+                dcc.Graph(id="decade-chart", figure=go.Figure(),
+                          config={"displayModeBar": False},
+                          style={"marginLeft": "-8px", "marginTop": "8px"}),
+            ]),
 
-            ], width=3, style={"padding": "16px 16px 16px 8px"}),
-        ]),
-    ], style={"maxWidth": "1600px", "margin": "0 auto"}),
+            # Filtro género
+            sidebar_section("filtrar", [
+                html.Label("Género", style={"fontSize": "10px", "color": C["muted"],
+                                             "fontFamily": MONO, "marginBottom": "6px",
+                                             "display": "block"}),
+                dcc.Dropdown(
+                    id="genre-filter",
+                    options=[{"label": "Todos", "value": ""}],
+                    value="",
+                    clearable=False,
+                    style={"fontSize": "11px"},
+                ),
+            ], style_extra={"borderBottom": "none"}),
 
-], style=STYLE_PAGE)
+        ], style={
+            "width": "230px",
+            "flexShrink": "0",
+            "backgroundColor": C["surface"],
+            "borderRight": f"1px solid {C['border']}",
+            "overflowY": "auto",
+            "height": "100vh",
+            "position": "sticky",
+            "top": "0",
+        }),
+
+        # ── CHAT CENTRAL ──────────────────────────────────────────────────────
+        html.Div([
+
+            # Mensajes
+            html.Div(
+                id="chat-messages",
+                children=[render_message("assistant",
+                    "Hola. Soy MúsicBot.\n\n"
+                    "Puedo ayudarte con letras, artistas, géneros musicales y recomendaciones.\n"
+                    "El sistema usa RAG para buscar en el corpus real de canciones.\n\n"
+                    "¿Qué quieres explorar?"
+                )],
+                style={
+                    "flex": "1",
+                    "overflowY": "auto",
+                    "padding": "32px 40px",
+                }
+            ),
+
+            # Sugerencias
+            html.Div([
+                html.Span(q, id=f"eg-{i}", n_clicks=0, style={
+                    "border": f"1px solid {C['dimmed']}",
+                    "borderRadius": "2px",
+                    "padding": "4px 10px",
+                    "fontSize": "10px",
+                    "color": C["muted"],
+                    "cursor": "pointer",
+                    "display": "inline-block",
+                    "marginRight": "6px",
+                    "marginBottom": "6px",
+                    "fontFamily": MONO,
+                    "letterSpacing": "0.02em",
+                    "transition": "all 0.15s",
+                }) for i, q in enumerate(EXAMPLE_QUESTIONS)
+            ], style={
+                "padding": "0 40px 12px",
+                "lineHeight": "2.2",
+            }),
+
+            # Input row
+            html.Div([
+                dcc.Input(
+                    id="user-input",
+                    type="text",
+                    n_submit=0,
+                    placeholder="Escribe tu pregunta...",
+                    style={
+                        "backgroundColor": "transparent",
+                        "border": "none",
+                        "borderTop": f"1px solid {C['border']}",
+                        "color": C["text"],
+                        "fontFamily": MONO,
+                        "fontSize": "13px",
+                        "padding": "18px 20px",
+                        "flex": "1",
+                        "outline": "none",
+                    }
+                ),
+                html.Button("↑", id="send-btn", n_clicks=0, style={
+                    "backgroundColor": C["gold"],
+                    "border": "none",
+                    "borderTop": f"1px solid {C['border']}",
+                    "color": C["bg"],
+                    "fontFamily": MONO,
+                    "fontSize": "18px",
+                    "fontWeight": "bold",
+                    "padding": "0 24px",
+                    "cursor": "pointer",
+                    "transition": "opacity 0.2s",
+                }),
+                html.Button("✕", id="clear-btn", n_clicks=0, style={
+                    "backgroundColor": "transparent",
+                    "border": "none",
+                    "borderTop": f"1px solid {C['border']}",
+                    "borderLeft": f"1px solid {C['border']}",
+                    "color": C["muted"],
+                    "fontFamily": MONO,
+                    "fontSize": "13px",
+                    "padding": "0 18px",
+                    "cursor": "pointer",
+                }),
+            ], style={
+                "display": "flex",
+                "borderTop": f"1px solid {C['border']}",
+            }),
+
+        ], style={
+            "flex": "1",
+            "display": "flex",
+            "flexDirection": "column",
+            "height": "100vh",
+            "backgroundColor": C["bg"],
+        }),
+
+        # ── PANEL DERECHO: RAG chunks + info ─────────────────────────────────
+        html.Div([
+
+            # Título panel
+            html.Div("fuentes recuperadas", style={
+                "fontSize": "9px",
+                "letterSpacing": "0.18em",
+                "textTransform": "uppercase",
+                "color": C["muted"],
+                "fontFamily": MONO,
+                "padding": "24px 20px 14px",
+                "borderBottom": f"1px solid {C['border']}",
+            }),
+
+            # Chunks
+            html.Div(
+                id="retrieved-chunks",
+                children=[
+                    html.Div("Los fragmentos recuperados por RAG aparecerán aquí.",
+                             style={"color": C["muted"], "fontSize": "11px",
+                                    "lineHeight": "1.7", "fontFamily": MONO})
+                ],
+                style={
+                    "padding": "16px 20px",
+                    "overflowY": "auto",
+                    "flex": "1",
+                    "borderBottom": f"1px solid {C['border']}",
+                }
+            ),
+
+            # Info sistema
+            html.Div([
+                html.Div("sistema", style={
+                    "fontSize": "9px",
+                    "letterSpacing": "0.18em",
+                    "textTransform": "uppercase",
+                    "color": C["muted"],
+                    "fontFamily": MONO,
+                    "marginBottom": "14px",
+                }),
+                html.Div(id="system-info"),
+            ], style={"padding": "18px 20px"}),
+
+        ], style={
+            "width": "240px",
+            "flexShrink": "0",
+            "backgroundColor": C["surface"],
+            "borderLeft": f"1px solid {C['border']}",
+            "height": "100vh",
+            "display": "flex",
+            "flexDirection": "column",
+            "overflowY": "auto",
+        }),
+
+    ], style={
+        "display": "flex",
+        "height": "100vh",
+        "overflow": "hidden",
+        "backgroundColor": C["bg"],
+        "color": C["text"],
+        "fontFamily": MONO,
+    }),
+
+], style={"backgroundColor": C["bg"]})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -478,7 +535,7 @@ app.layout = html.Div([
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.callback(
-    [Output("status-badge", "children"),
+    [Output("header-status", "children"),
      Output("corpus-stats", "children"),
      Output("genre-chart", "figure"),
      Output("decade-chart", "figure"),
@@ -489,196 +546,205 @@ app.layout = html.Div([
 )
 def update_status(n):
     ready = STATUS["ready"]
-    msg = STATUS["message"]
+    msg   = STATUS["message"]
+    err   = STATUS["error"]
 
-    badge_color = COLORS["accent2"] if ready else COLORS["muted"]
-    badge = html.Span(msg, style={
-        "backgroundColor": badge_color + "22",
-        "border": f"1px solid {badge_color}",
-        "borderRadius": "20px",
-        "padding": "4px 12px",
-        "fontSize": "11px",
-        "color": badge_color,
-        "fontFamily": FONT_MONO,
-    })
+    dot_color = C["green"] if ready else (C["red"] if err else C["gold"])
+    badge = html.Div([
+        html.Span("●", style={"color": dot_color, "marginRight": "6px", "fontSize": "10px"}),
+        html.Span(msg, style={"fontSize": "10px", "color": C["muted"], "fontFamily": MONO}),
+    ], style={"display": "flex", "alignItems": "center"})
 
     if not ready:
-        return badge, no_update, no_update, no_update, no_update, no_update, False
+        return badge, no_update, no_update, no_update, [{"label": "todos", "value": ""}], no_update, False
 
-    # Corpus stats
-    n_songs = len(df_corpus) if df_corpus is not None else 0
-    col_g = "genre" if "genre" in (df_corpus.columns if df_corpus is not None else []) else "genero"
-    n_genres = df_corpus[col_g].nunique() if df_corpus is not None and col_g in df_corpus.columns else 0
+    n_songs  = len(df_corpus) if df_corpus is not None else 0
+    col_g    = next((c for c in ["genre", "genero"] if c in (df_corpus.columns if df_corpus is not None else [])), None)
+    n_genres = df_corpus[col_g].nunique() if df_corpus is not None and col_g else 0
     n_chunks = len(rag_chunks) if rag_chunks else 0
+    col_l    = next((c for c in ["lyrics", "letra"] if c in (df_corpus.columns if df_corpus is not None else [])), None)
+    has_lyrics = col_l is not None and df_corpus is not None and df_corpus[col_l].notna().sum() > 100
+
+    def stat_row(value, label, color):
+        return html.Div([
+            html.Span(f"{value:,}" if isinstance(value, int) else str(value),
+                      style={"color": color, "fontSize": "18px", "fontFamily": SERIF,
+                             "fontWeight": "300"}),
+            html.Span(f" {label}", style={"fontSize": "10px", "color": C["muted"],
+                                           "fontFamily": MONO}),
+        ], style={"marginBottom": "4px"})
 
     stats = html.Div([
-        html.Div([
-            html.Span(f"{n_songs:,}", style={"color": COLORS["accent"], "fontSize": "20px",
-                                              "fontFamily": FONT_DISPLAY}),
-            html.Span(" canciones", style={"fontSize": "10px", "color": COLORS["muted"]}),
-        ]),
-        html.Div([
-            html.Span(f"{n_genres}", style={"color": COLORS["accent2"], "fontSize": "20px",
-                                             "fontFamily": FONT_DISPLAY}),
-            html.Span(" géneros", style={"fontSize": "10px", "color": COLORS["muted"]}),
-        ]),
-        html.Div([
-            html.Span(f"{n_chunks:,}", style={"color": "#7bc8f6", "fontSize": "20px",
-                                               "fontFamily": FONT_DISPLAY}),
-            html.Span(" chunks RAG", style={"fontSize": "10px", "color": COLORS["muted"]}),
-        ]),
-    ], style={"marginBottom": "12px", "display": "flex", "gap": "16px",
-              "flexWrap": "wrap"})
-
-    genre_fig = make_genre_chart()
-    decade_fig = make_decade_chart()
-
-    # Genre filter options
-    genre_opts = [{"label": "Todos", "value": ""}]
-    if df_corpus is not None and col_g in df_corpus.columns:
-        for g in sorted(df_corpus[col_g].dropna().unique()):
-            genre_opts.append({"label": g.title(), "value": g})
-
-    # System info
-    from src.finetuning_utils import classifier_available
-    clf_status = "✅ Disponible" if classifier_available() else "⚠️ No entrenado"
-    api_mode = chatbot._api_mode if chatbot else "?"
-    sys_info = html.Div([
-        html.Div([html.Span("Generador: ", style={"color": COLORS["muted"]}),
-                  html.Span(api_mode, style={"color": COLORS["accent2"]})],
-                 style={"fontSize": "11px", "marginBottom": "4px"}),
-        html.Div([html.Span("Clasificador: ", style={"color": COLORS["muted"]}),
-                  html.Span(clf_status, style={"color": COLORS["text"]})],
-                 style={"fontSize": "11px", "marginBottom": "4px"}),
-        html.Div([html.Span("Chunking: ", style={"color": COLORS["muted"]}),
-                  html.Span(CHUNKING_STRATEGY, style={"color": COLORS["text"]})],
-                 style={"fontSize": "11px"}),
+        stat_row(n_songs,  "canciones", C["text"]),
+        stat_row(n_genres, "géneros",   C["gold"]),
+        stat_row(n_chunks, "chunks",    "#8ab4c8"),
+        html.Div("letras disponibles" if has_lyrics else "sin columna 'lyrics'",
+                 style={"fontSize": "9px", "color": C["green"] if has_lyrics else C["red"],
+                        "fontFamily": MONO, "marginTop": "6px", "letterSpacing": "0.05em"}),
     ])
 
-    return badge, stats, genre_fig, decade_fig, genre_opts, sys_info, True   # disable interval
+    genre_opts = [{"label": "todos", "value": ""}]
+    if df_corpus is not None and col_g:
+        for g in sorted(df_corpus[col_g].dropna().unique()):
+            genre_opts.append({"label": str(g).lower(), "value": str(g)})
+
+    from src.finetuning_utils import classifier_available
+    clf_ok   = classifier_available()
+    api_mode = chatbot._api_mode if chatbot else "—"
+
+    sys_info = html.Div([
+        _info_row("generador",    api_mode),
+        _info_row("clasificador", "activo" if clf_ok else "no entrenado"),
+        _info_row("chunking",     CHUNKING_STRATEGY),
+        _info_row("letras",       "sí" if has_lyrics else "no"),
+    ])
+
+    return badge, stats, make_genre_chart(), make_decade_chart(), genre_opts, sys_info, True
+
+
+def _info_row(label, value):
+    return html.Div([
+        html.Span(label, style={"color": C["muted"], "fontSize": "10px",
+                                 "marginRight": "6px", "fontFamily": MONO}),
+        html.Span(value, style={"color": C["text"], "fontSize": "10px",
+                                 "fontFamily": MONO}),
+    ], style={"marginBottom": "5px"})
+
+
+@app.callback(
+    Output("api-status", "children"),
+    Input("apply-api-btn", "n_clicks"),
+    State("api-key-input", "value"),
+    prevent_initial_call=True,
+)
+def apply_api_key(n, key):
+    if not key or not key.strip():
+        return "ingresa una key primero"
+    key = key.strip()
+    if key.startswith("sk-ant-"):
+        os.environ["ANTHROPIC_API_KEY"] = key
+        if chatbot:
+            chatbot._api_mode = "anthropic"
+        return "claude api activa"
+    elif key.startswith("sk-"):
+        os.environ["OPENAI_API_KEY"] = key
+        if chatbot:
+            chatbot._api_mode = "openai"
+        return "openai api activa"
+    return "formato no reconocido"
 
 
 @app.callback(
     [Output("chat-messages", "children"),
      Output("chat-store", "data"),
      Output("user-input", "value"),
-     Output("retrieved-chunks", "children")],
+     Output("retrieved-chunks", "children"),
+     Output("intent-store", "data")],
     [Input("send-btn", "n_clicks"),
      Input("user-input", "n_submit"),
      Input("clear-btn", "n_clicks"),
-     *[Input(f"example-{i}", "n_clicks") for i in range(len(EXAMPLE_QUESTIONS))]],
+     *[Input(f"eg-{i}", "n_clicks") for i in range(len(EXAMPLE_QUESTIONS))]],
     [State("user-input", "value"),
-     State("chat-store", "data"),
-     State("rag-checkbox", "value"),
-     State("genre-filter", "value")],
-    prevent_initial_call=True,
+     State("chat-store", "data")],
 )
-def handle_chat(send_clicks, input_submit, clear_clicks,
-                *args):
-    # Unpack examples + states
-    example_clicks = args[:len(EXAMPLE_QUESTIONS)]
-    user_text, history, rag_val, genre_filter = args[len(EXAMPLE_QUESTIONS):]
+def handle_chat(send, n_submit, clear, *args):
+    n_eg           = len(EXAMPLE_QUESTIONS)
+    example_clicks = args[:n_eg]
+    user_text      = args[n_eg]
+    history        = args[n_eg + 1] if len(args) > n_eg + 1 else []
+    triggered           = [c["prop_id"] for c in callback_context.triggered]
 
-    triggered = [c["prop_id"] for c in callback_context.triggered]
-
-    # Clear
     if any("clear-btn" in t for t in triggered):
         if chatbot:
             chatbot.reset_history()
-        welcome = render_message("assistant",
-            "¡Historial limpiado! 🎵 ¿Sobre qué quieres preguntar ahora?")
-        return [welcome], [], "", [html.P("Esperando pregunta...",
-                                           style={"color": COLORS["muted"],
-                                                  "fontSize": "11px"})]
+        return (
+            [render_message("assistant", "Historial limpiado. ¿Sobre qué quieres preguntar?")],
+            [], "",
+            [html.Div("Esperando consulta...", style={"color": C["muted"], "fontSize": "11px",
+                                                       "fontFamily": MONO})],
+            "general"
+        )
 
-    # Example button clicked
     for i, q in enumerate(EXAMPLE_QUESTIONS):
-        if any(f"example-{i}.n_clicks" in t for t in triggered):
+        if any(f"eg-{i}" in t for t in triggered):
             user_text = q
             break
 
     if not user_text or not user_text.strip():
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
 
     if not STATUS["ready"] or chatbot is None:
-        msgs = list(history or []) + [
-            {"role": "user", "content": user_text},
-            {"role": "assistant", "content": "⏳ El sistema aún se está inicializando. Por favor espera un momento."},
-        ]
-        return _render_history(msgs), msgs, "", no_update
-
-    use_rag = bool(rag_val)
-
-    # Usar género del dropdown si está seleccionado,
-    # si no, usar el clasificador fine-tuneado automáticamente
-    genre_f = genre_filter if genre_filter else None
-    if not genre_f:
-        try:
-            from src.finetuning_utils import predict_genre, classifier_available
-            if classifier_available():
-                from src.chatbot_engine import detect_intent
-                intent_check = detect_intent(user_text)
-                if intent_check != "general":
-                    genre_f = predict_genre(user_text)
-        except Exception:
-            pass
+        msgs = list(history or [])
+        msgs.append({"role": "user",      "content": user_text})
+        msgs.append({"role": "assistant", "content": "El sistema aún está iniciando. Espera un momento.",
+                     "intent": "general"})
+        return _render_history(msgs), msgs, "", no_update, "general"
 
     try:
-        response, retrieved = chatbot.chat(user_text, use_rag=use_rag,
-                                           genero_filter=genre_f)
+        response, retrieved = chatbot.chat(user_text, use_rag=True)
+        from src.chatbot_engine import detect_intent
+        intent = detect_intent(user_text)
     except Exception as e:
-        response = f"Error: {e}"
+        response  = f"Error: {e}"
         retrieved = []
+        intent    = "general"
 
-    # Update history
     new_history = list(history or [])
-    new_history.append({"role": "user", "content": user_text})
-    new_history.append({"role": "assistant", "content": response})
+    new_history.append({"role": "user",      "content": user_text, "intent": "general"})
+    new_history.append({"role": "assistant", "content": response,  "intent": intent})
 
-    # Render chunks
-    chunks_ui = []
+    # Chunks UI
     if retrieved:
+        chunks_ui = []
         for c in retrieved:
-            score_pct = int(c.get("score", 0) * 100)
+            score_pct    = int(c.get("score", 0) * 100)
+            texto_preview = c.get("texto", "")
             chunks_ui.append(html.Div([
                 html.Div([
-                    html.Span(c["titulo"], style={"color": COLORS["text"],
-                                                   "fontWeight": "bold"}),
-                    html.Span(f" — {c['artista']}",
-                               style={"color": COLORS["accent"]}),
-                ], style={"fontSize": "11px", "marginBottom": "4px"}),
-                html.Div(f"🎸 {c['genero']} · 📅 {c['año']} · 🎯 {score_pct}%",
-                         style={"fontSize": "10px", "color": COLORS["muted"],
-                                "marginBottom": "4px"}),
-                html.Div(c["texto"][:180] + "...",
-                         style={"fontSize": "10px", "color": COLORS["muted"],
-                                "fontStyle": "italic", "lineHeight": "1.4"}),
-            ], style=STYLE_CHUNK_CARD))
+                    html.Span(c["titulo"],
+                              style={"color": C["text"], "fontSize": "11px",
+                                     "fontFamily": MONO}),
+                    html.Span(f"  {c['artista']}",
+                              style={"color": C["gold"], "fontSize": "11px",
+                                     "fontFamily": MONO}),
+                ], style={"marginBottom": "4px"}),
+                html.Div(
+                    f"{c['genero']} · {c['año']} · {score_pct}%",
+                    style={"fontSize": "9px", "color": C["muted"], "marginBottom": "6px",
+                           "fontFamily": MONO, "letterSpacing": "0.05em"}
+                ),
+                html.Div(
+                    texto_preview[:220] + ("…" if len(texto_preview) > 220 else ""),
+                    style={"fontSize": "10px", "color": "#666", "fontStyle": "italic",
+                           "lineHeight": "1.6", "whiteSpace": "pre-wrap", "fontFamily": MONO}
+                ),
+            ], style={
+                "borderLeft": f"2px solid {C['gold']}55",
+                "paddingLeft": "12px",
+                "marginBottom": "16px",
+            }))
     else:
-        chunks_ui = [html.P("No se recuperaron chunks relevantes.",
-                             style={"color": COLORS["muted"], "fontSize": "11px"})]
+        chunks_ui = [html.Div("Sin chunks relevantes.", style={
+            "color": C["muted"], "fontSize": "11px", "fontFamily": MONO})]
 
-    return _render_history(new_history), new_history, "", chunks_ui
+    return _render_history(new_history), new_history, "", chunks_ui, intent
 
 
 def _render_history(history: list) -> list:
-    msgs = []
+    out = []
     for turn in history:
-        msgs.append(render_message(turn["role"], turn["content"]))
-    return msgs
+        intent = turn.get("intent", "general")
+        out.append(render_message(turn["role"], turn["content"], intent))
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    print("\n" + "═" * 60)
-    print("  🎵  MúsicBot — Chatbot Musical CUC  🎵")
-    print("═" * 60)
-    print(f"  URL: http://{APP_HOST}:{APP_PORT}/")
-    print(f"  Corpus: {CORPUS_CSV}")
-    print(f"  Chunking: {CHUNKING_STRATEGY}")
-    print("  (El índice RAG se construye en background)")
-    print("═" * 60 + "\n")
+    print(f"\n{'─'*50}")
+    print("  músicbot — chatbot musical CUC")
+    print(f"{'─'*50}")
+    print(f"  url   : http://{APP_HOST}:{APP_PORT}/")
+    print(f"  csv   : {CORPUS_CSV}")
+    print(f"  rag   : chunking por {CHUNKING_STRATEGY}")
+    print(f"{'─'*50}\n")
     app.run(host=APP_HOST, port=APP_PORT, debug=APP_DEBUG)
